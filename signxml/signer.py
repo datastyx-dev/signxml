@@ -222,8 +222,12 @@ class XMLSigner(XMLSignatureProcessor):
         # create the sig_root structure for pre reference annotating
         doc_root, sig_root = self._initialize_sig_root(data)
         # permit annotator to add content to the Signature node
-        for signature_annotator in self.signature_annotators:
-            signature_annotator(sig_root, signing_settings=signing_settings)
+        xades_post_annotation = None
+        for signature_annotator in self.signature_annotators :
+            if not signature_annotator.__name__ == "_build_xades_ds_object": # TODO change xades code to rely on new annotator approach
+                signature_annotator(sig_root, signing_settings=signing_settings)
+            else:
+                xades_post_annotation = signature_annotator
         # validate references only after annotations so that elements of the Signature node can be signed
         input_references = self._preprocess_reference_uri(reference_uri)
 
@@ -242,7 +246,10 @@ class XMLSigner(XMLSignatureProcessor):
             c14n_inputs=c14n_inputs,
             inclusive_ns_prefixes=inclusive_ns_prefixes,
         )
-
+        # perfom xades post annotation if needed
+        # TODO : clean Xades code to rely on the common annotator mechanism
+        if xades_post_annotation: 
+            xades_post_annotation(sig_root, signing_settings=signing_settings)
         
 
         signed_info_c14n = self._c14n(
@@ -409,7 +416,8 @@ class XMLSigner(XMLSignatureProcessor):
                 )
 
     def _build_sig(self, sig_root, references, c14n_inputs, inclusive_ns_prefixes):
-        signed_info = SubElement(sig_root, ds_tag("SignedInfo"), nsmap=self.namespaces)
+        signed_info = Element( ds_tag("SignedInfo"), nsmap=self.namespaces)
+        sig_root.insert(0,signed_info)
         sig_c14n_method = SubElement(signed_info, ds_tag("CanonicalizationMethod"), Algorithm=self.c14n_alg.value)
         if inclusive_ns_prefixes:
             SubElement(sig_c14n_method, ec_tag("InclusiveNamespaces"), PrefixList=" ".join(inclusive_ns_prefixes))
@@ -430,7 +438,8 @@ class XMLSigner(XMLSignatureProcessor):
             )
             digest = self._get_digest(payload_c14n, algorithm=self.digest_alg)
             digest_value.text = b64encode(digest).decode()
-        signature_value = SubElement(sig_root, ds_tag("SignatureValue"))
+        signature_value = Element( ds_tag("SignatureValue"))
+        sig_root.insert(1,signature_value)
         return signed_info, signature_value
 
     def _build_signature_properties(self, signature_properties):
