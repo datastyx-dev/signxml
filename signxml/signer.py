@@ -203,8 +203,6 @@ class XMLSigner(XMLSignatureProcessor):
         else:
             cert_chain = cert  # type: ignore
 
-        input_references = self._preprocess_reference_uri(reference_uri)
-
         signing_settings = SigningSettings(
             key=None,
             key_name=key_name,
@@ -221,7 +219,15 @@ class XMLSigner(XMLSignatureProcessor):
             else:
                 signing_settings.key = key
 
-        sig_root, doc_root, c14n_inputs, references = self._unpack(data, input_references)
+        # create the sig_root structure for pre reference annotating
+        doc_root, sig_root = self._initialize_sig_root(data)
+        # permit annotator to add content to the Signature node
+        for signature_annotator in self.signature_annotators:
+            signature_annotator(sig_root, signing_settings=signing_settings)
+        # validate references only after annotations so that elements of the Signature node can be signed
+        input_references = self._preprocess_reference_uri(reference_uri)
+
+        doc_root, c14n_inputs, references = self._unpack( data, doc_root, sig_root, input_references)
 
         if self.construction_method == SignatureConstructionMethod.detached and signature_properties is not None:
             references.append(SignatureReference(URI="#prop"))
@@ -237,8 +243,7 @@ class XMLSigner(XMLSignatureProcessor):
             inclusive_ns_prefixes=inclusive_ns_prefixes,
         )
 
-        for signature_annotator in self.signature_annotators:
-            signature_annotator(sig_root, signing_settings=signing_settings)
+        
 
         signed_info_c14n = self._c14n(
             signed_info_node, algorithm=self.c14n_alg, inclusive_ns_prefixes=inclusive_ns_prefixes
@@ -325,29 +330,43 @@ class XMLSigner(XMLSignatureProcessor):
             new_references.append(replace(reference, URI=uri))
         return c14n_inputs, new_references
 
-    def _unpack(self, data, references: List[SignatureReference]):
+    def _initialize_sig_root(self, data):
         sig_root = Element(ds_tag("Signature"), nsmap=self.namespaces)
         if self.construction_method == SignatureConstructionMethod.enveloped:
             if isinstance(data, (str, bytes)):
                 raise InvalidInput("When using enveloped signature, **data** must be an XML element")
             doc_root = self.get_root(data)
-            c14n_inputs = [self.get_root(data)]
-            if references is not None:
-                # Only sign the referenced element(s)
-                c14n_inputs, references = self._get_c14n_inputs_from_references(doc_root, references)
-
             signature_placeholders = self._findall(doc_root, "Signature[@Id='placeholder']", xpath=".//")
             if len(signature_placeholders) == 0:
-                doc_root.append(sig_root)
+                    doc_root.append(sig_root)
             elif len(signature_placeholders) == 1:
                 sig_root = signature_placeholders[0]
                 del sig_root.attrib["Id"]
+            else:
+                raise InvalidInput("Enveloped signature input contains more than one placeholder")
+        elif self.construction_method == SignatureConstructionMethod.detached:
+            doc_root = self.get_root(data)
+        elif self.construction_method == SignatureConstructionMethod.enveloping:
+            doc_root = sig_root
+        return doc_root, sig_root
+        
+    def _unpack(self, data, doc_root, sig_root, references: List[SignatureReference]):
+        if self.construction_method == SignatureConstructionMethod.enveloped:
+            if isinstance(data, (str, bytes)):
+                raise InvalidInput("When using enveloped signature, **data** must be an XML element")
+            c14n_inputs = [self.get_root(data)]
+            if references is not None:
+                # Only sign the referenced element(s)
+                c14n_inputs, references = self._get_c14n_inputs_from_references(c14n_inputs[0], references)
+
+            signature_placeholders = self._findall(self.get_root(data), "Signature[@Id='placeholder']", xpath=".//")
+            if len(signature_placeholders) == 1:
                 for c14n_input in c14n_inputs:
                     placeholders = self._findall(c14n_input, "Signature[@Id='placeholder']", xpath=".//")
                     if placeholders:
                         assert len(placeholders) == 1
                         _remove_sig(placeholders[0])
-            else:
+            elif len(signature_placeholders) > 1:
                 raise InvalidInput("Enveloped signature input contains more than one placeholder")
 
             if references is None:
@@ -358,7 +377,6 @@ class XMLSigner(XMLSignatureProcessor):
                     uri = "#{}".format(payload_id) if payload_id is not None else ""
                     references.append(SignatureReference(URI=uri))
         elif self.construction_method == SignatureConstructionMethod.detached:
-            doc_root = self.get_root(data)
             if references is None:
                 uri = "#{}".format(data.get("Id", data.get("ID", "object")))
                 references = [SignatureReference(URI=uri)]
@@ -375,7 +393,7 @@ class XMLSigner(XMLSignatureProcessor):
             else:
                 c14n_inputs[0].append(self.get_root(data))
             references = [SignatureReference(URI="#object")]
-        return sig_root, doc_root, c14n_inputs, references
+        return doc_root, c14n_inputs, references
 
     def _build_transforms_for_reference(self, *, transforms_node: _Element, reference: SignatureReference):
         if self.construction_method == SignatureConstructionMethod.enveloped:
