@@ -219,8 +219,8 @@ class XMLSigner(XMLSignatureProcessor):
             else:
                 signing_settings.key = key
 
-        # create the sig_root structure for pre reference annotating
-        doc_root, sig_root = self._initialize_sig_root(data)
+        # create the sig_root structure for pre reference annotating, retreive placeholder position for re injection
+        doc_root, sig_root, placeholder_path, placeholder_index, placeholder_tail = self._initialize_sig_root(data)
         # permit annotator to add content to the Signature node
         xades_post_annotation = None
         for signature_annotator in self.signature_annotators :
@@ -289,7 +289,13 @@ class XMLSigner(XMLSignatureProcessor):
         if self.construction_method == SignatureConstructionMethod.enveloping:
             for c14n_input in c14n_inputs:
                 doc_root.append(c14n_input)
-
+        if self.construction_method == SignatureConstructionMethod.enveloped:
+            if placeholder_path is not None:
+                if not (parent :=  doc_root.find(placeholder_path)):
+                    parent.text = parent.text.removesuffix(placeholder_tail)
+                    parent.insert(placeholder_index,sig_root)
+            else:
+                doc_root.append(sig_root)
         if self.construction_method == SignatureConstructionMethod.detached and signature_properties is not None:
             sig_root.append(signature_properties_el)
 
@@ -338,7 +344,10 @@ class XMLSigner(XMLSignatureProcessor):
         return c14n_inputs, new_references
 
     def _initialize_sig_root(self, data):
-        sig_root = Element(ds_tag("Signature"), nsmap=self.namespaces)
+        sig_root = Element(ds_tag("Signature"), nsmap=self.namespaces,Id="placeholder")
+        placeholder_path = None
+        placeholder_index = None
+        placeholder_tail = None
         if self.construction_method == SignatureConstructionMethod.enveloped:
             if isinstance(data, (str, bytes)):
                 raise InvalidInput("When using enveloped signature, **data** must be an XML element")
@@ -348,33 +357,33 @@ class XMLSigner(XMLSignatureProcessor):
                     doc_root.append(sig_root)
             elif len(signature_placeholders) == 1:
                 sig_root = signature_placeholders[0]
-                del sig_root.attrib["Id"]
+                placeholder_path = sig_root.getroottree().getelementpath(sig_root.getparent())
+                placeholder_index = sig_root.getparent().index(sig_root)
+                placeholder_tail = sig_root.tail
             else:
                 raise InvalidInput("Enveloped signature input contains more than one placeholder")
         elif self.construction_method == SignatureConstructionMethod.detached:
             doc_root = self.get_root(data)
         elif self.construction_method == SignatureConstructionMethod.enveloping:
             doc_root = sig_root
-        return doc_root, sig_root
+        
+        return doc_root, sig_root, placeholder_path, placeholder_index, placeholder_tail
         
     def _unpack(self, data, doc_root, sig_root, references: List[SignatureReference]):
         if self.construction_method == SignatureConstructionMethod.enveloped:
             if isinstance(data, (str, bytes)):
                 raise InvalidInput("When using enveloped signature, **data** must be an XML element")
-            c14n_inputs = [self.get_root(data)]
+            c14n_inputs = [doc_root]
             if references is not None:
                 # Only sign the referenced element(s)
                 c14n_inputs, references = self._get_c14n_inputs_from_references(c14n_inputs[0], references)
 
-            signature_placeholders = self._findall(self.get_root(data), "Signature[@Id='placeholder']", xpath=".//")
-            if len(signature_placeholders) == 1:
-                for c14n_input in c14n_inputs:
-                    placeholders = self._findall(c14n_input, "Signature[@Id='placeholder']", xpath=".//")
-                    if placeholders:
-                        assert len(placeholders) == 1
-                        _remove_sig(placeholders[0])
-            elif len(signature_placeholders) > 1:
-                raise InvalidInput("Enveloped signature input contains more than one placeholder")
+            for c14n_input in c14n_inputs:
+                placeholders = self._findall(c14n_input, "Signature[@Id='placeholder']", xpath=".//")
+                if placeholders:
+                    del sig_root.attrib["Id"]
+                    assert len(placeholders) == 1
+                    _remove_sig(placeholders[0])
 
             if references is None:
                 # Set default reference URIs based on signed data ID attribute values
