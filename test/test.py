@@ -473,7 +473,7 @@ class TestSignXML(unittest.TestCase, LoadExampleKeys):
             reference_uri = ["assertionId", "assertion2"] if "assertion2" in d else "assertionId"
             signed_root = XMLSigner().sign(data, reference_uri=reference_uri, key=key, cert=crt)
             res = XMLVerifier().verify(etree.tostring(signed_root), x509_cert=crt, expect_references=True)
-            signed_data_root = res.signed_xml
+            signed_data_root = res[0].signed_xml
             ref = signed_root.xpath(
                 "/samlp:Response/saml:Assertion/ds:Signature/ds:SignedInfo/ds:Reference",
                 namespaces={

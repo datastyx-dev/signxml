@@ -86,8 +86,10 @@ class SignatureConfiguration:
 @dataclass(frozen=True)
 class VerifyResult:
     """
-    This is a dataclass representing structured data returned by :func:`signxml.XMLVerifier.verify`. The results of a
-    verification contain the signed bytes, the parsed signed XML, and the parsed signature XML. Example usage:
+    This is a dataclass representing structured data returned by :func:`signxml.XMLVerifier.verify`. A result coevers a 
+    one of the references of the signatures SignedInfo. The results of a verification contain the signed bytes, 
+    the parsed signed XML, the parsed signature XML and the URI of the signature reference that was validated. 
+    Example usage:
 
         verified_data = signxml.XMLVerifier().verify(input_data).signed_xml
     """
@@ -99,6 +101,9 @@ class VerifyResult:
     "The signed data parsed as XML (or None if parsing failed)"
 
     signature_xml: etree._Element
+    "The signature element parsed as XML"
+
+    reference_uri: Optional[str] 
     "The signature element parsed as XML"
 
 
@@ -463,7 +468,7 @@ class XMLVerifier(XMLSignatureProcessor):
             msg = "Expected to find {} references, but found {}"
             raise InvalidSignature(msg.format(self.config.expect_references, len(verify_results)))
 
-        return verify_results if self.config.expect_references > 1 else verify_results[0]
+        return verify_results if self.config.expect_references is True or self.config.expect_references > 1 else verify_results[0]
 
     def _verify_reference(self, reference, index, root, uri_resolver, c14n_algorithm, signature):
         copied_root = self._fromstring(self._tostring(root))
@@ -485,7 +490,7 @@ class XMLVerifier(XMLSignatureProcessor):
             payload_c14n_xml = self._fromstring(payload_c14n)
         except etree.XMLSyntaxError:
             payload_c14n_xml = None
-        return VerifyResult(payload_c14n, payload_c14n_xml, signature)
+        return VerifyResult(payload_c14n, payload_c14n_xml, signature, reference.get('URI'))
 
     def validate_schema(self, signature):
         last_exception = None

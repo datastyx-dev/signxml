@@ -57,6 +57,11 @@ class SignatureReference:
     declarations should be preserved when canonicalizing the reference value (**InclusiveNamespaces PrefixList**).
     """
 
+    reference_construction_method:SignatureConstructionMethod = SignatureConstructionMethod.enveloped 
+    """
+    ``signxml.methods.enveloped``, ``signxml.methods.enveloping``, or ``signxml.methods.detached``. See
+        :class:`SignatureConstructionMethod` for details.
+    """
 
 class XMLSigner(XMLSignatureProcessor):
     """
@@ -335,11 +340,16 @@ class XMLSigner(XMLSignatureProcessor):
         else:
             sig_root.append(signing_settings.key_info)
 
-    def _get_c14n_inputs_from_references(self, doc_root, references: List[SignatureReference]):
+    def _get_c14n_inputs_from_references(self, doc_root,sig_root, references: List[SignatureReference]):
         c14n_inputs, new_references = [], []
         for reference in references:
             uri = reference.URI if reference.URI.startswith("#") else "#" + reference.URI
-            c14n_inputs.append(self.get_root(self._resolve_reference(doc_root, {"URI": uri})))
+            resolved_ref = None
+            try:
+                resolved_ref = self._resolve_reference(doc_root, {"URI": uri})
+            except InvalidInput:  # check if signature is on signature content
+                resolved_ref = self._resolve_reference(sig_root, {"URI": uri})
+            c14n_inputs.append(self.get_root(resolved_ref))
             new_references.append(replace(reference, URI=uri))
         return c14n_inputs, new_references
 
@@ -376,7 +386,7 @@ class XMLSigner(XMLSignatureProcessor):
             c14n_inputs = [doc_root]
             if references is not None:
                 # Only sign the referenced element(s)
-                c14n_inputs, references = self._get_c14n_inputs_from_references(c14n_inputs[0], references)
+                c14n_inputs, references = self._get_c14n_inputs_from_references(doc_root,sig_root, references)
 
             for c14n_input in c14n_inputs:
                 placeholders = self._findall(c14n_input, "Signature[@Id='placeholder']", xpath=".//")
@@ -396,11 +406,11 @@ class XMLSigner(XMLSignatureProcessor):
             if references is None:
                 uri = "#{}".format(data.get("Id", data.get("ID", "object")))
                 references = [SignatureReference(URI=uri)]
-                c14n_inputs = [self.get_root(data)]
+                c14n_inputs = [doc_root]
             try:
-                c14n_inputs, references = self._get_c14n_inputs_from_references(doc_root, references)
+                c14n_inputs, references = self._get_c14n_inputs_from_references(doc_root, sig_root, references)
             except InvalidInput:  # Dummy reference URI
-                c14n_inputs = [self.get_root(data)]
+                c14n_inputs = [doc_root]
         elif self.construction_method == SignatureConstructionMethod.enveloping:
             doc_root = sig_root
             c14n_inputs = [Element(ds_tag("Object"), nsmap=self.namespaces, Id="object")]
@@ -412,7 +422,7 @@ class XMLSigner(XMLSignatureProcessor):
         return doc_root, c14n_inputs, references
 
     def _build_transforms_for_reference(self, *, transforms_node: _Element, reference: SignatureReference):
-        if self.construction_method == SignatureConstructionMethod.enveloped:
+        if reference.reference_construction_method == SignatureConstructionMethod.enveloped:
             SubElement(transforms_node, ds_tag("Transform"), Algorithm=SignatureConstructionMethod.enveloped.value)
             SubElement(transforms_node, ds_tag("Transform"), Algorithm=reference.c14n_method.value)  # type: ignore
         else:
