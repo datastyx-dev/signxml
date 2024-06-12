@@ -129,7 +129,7 @@ class XMLSigner(XMLSignatureProcessor):
 
     def sign(
         self,
-        data,
+        data = None,
         *,
         key: Optional[Union[str, bytes, rsa.RSAPrivateKey, dsa.DSAPrivateKey, ec.EllipticCurvePrivateKey]] = None,
         passphrase: Optional[bytes] = None,
@@ -207,7 +207,8 @@ class XMLSigner(XMLSignatureProcessor):
                 raise InvalidInput("No PEM-encoded certificates found in string cert input data")
         else:
             cert_chain = cert  # type: ignore
-
+        if data is None and ( reference_uri is None or len(self.signature_annotators)==1):
+            raise InvalidInput("When no data is provided at least a reference_uri and a signature_annotator must be provided.")
         signing_settings = SigningSettings(
             key=None,
             key_name=key_name,
@@ -225,7 +226,10 @@ class XMLSigner(XMLSignatureProcessor):
                 signing_settings.key = key
 
         # create the sig_root structure for pre reference annotating, retreive placeholder position for re injection
-        doc_root, sig_root, placeholder_path, placeholder_index, placeholder_tail = self._initialize_sig_root(data)
+        if data is not None:
+            doc_root, sig_root, placeholder_path, placeholder_index, placeholder_tail = self._initialize_sig_root(data)
+        else:
+            doc_root, sig_root, placeholder_path, placeholder_index, placeholder_tail = None, Element(ds_tag("Signature"), nsmap=self.namespaces,Id="placeholder"), None, None, None
         # permit annotator to add content to the Signature node
         xades_post_annotation = None
         for signature_annotator in self.signature_annotators :
@@ -345,9 +349,12 @@ class XMLSigner(XMLSignatureProcessor):
         for reference in references:
             uri = reference.URI if reference.URI.startswith("#") else "#" + reference.URI
             resolved_ref = None
-            try:
-                resolved_ref = self._resolve_reference(doc_root, {"URI": uri})
-            except InvalidInput:  # check if signature is on signature content
+            if doc_root is not None:
+                try:
+                    resolved_ref = self._resolve_reference(doc_root, {"URI": uri})
+                except InvalidInput:  # check if signature is on signature content
+                    resolved_ref = self._resolve_reference(sig_root, {"URI": uri})
+            else:
                 resolved_ref = self._resolve_reference(sig_root, {"URI": uri})
             c14n_inputs.append(self.get_root(resolved_ref))
             new_references.append(replace(reference, URI=uri))
@@ -403,14 +410,17 @@ class XMLSigner(XMLSignatureProcessor):
                     uri = "#{}".format(payload_id) if payload_id is not None else ""
                     references.append(SignatureReference(URI=uri))
         elif self.construction_method == SignatureConstructionMethod.detached:
-            if references is None:
+            if references is None and doc_root is not None:
                 uri = "#{}".format(data.get("Id", data.get("ID", "object")))
                 references = [SignatureReference(URI=uri)]
                 c14n_inputs = [doc_root]
             try:
                 c14n_inputs, references = self._get_c14n_inputs_from_references(doc_root, sig_root, references)
             except InvalidInput:  # Dummy reference URI
-                c14n_inputs = [doc_root]
+                if doc_root is not None:
+                    c14n_inputs = [doc_root]
+                else:
+                    raise InvalidInput()
         elif self.construction_method == SignatureConstructionMethod.enveloping:
             doc_root = sig_root
             c14n_inputs = [Element(ds_tag("Object"), nsmap=self.namespaces, Id="object")]
